@@ -1,0 +1,16 @@
+.ea-filter-category-control {
+	margin: 8px 0 10px;
+}
+
+.ea-filter-category-control input[type='search'] {
+	margin: 0;
+}
+
+.ea-filter-category-status {
+	color: #646970;
+	margin: 6px 0 0;
+}
+
+.ea-filter-category-hidden {
+	display: none !important;
+}
