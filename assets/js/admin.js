@@ -1,123 +1,152 @@
-(function () {
-	'use strict';
+(() => {
+    'use strict';
 
-	var taxonomyId = 'taxonomy-product_cat';
-	var filterId = 'ea-product-cat-filter';
-	var hiddenClass = 'ea-filter-category-hidden';
+    const taxonomies = [
+        {
+            taxonomy: 'product_cat',
+            boxSelector: '#taxonomy-product_cat',
+            filterId: 'ea-product-cat-filter'
+        },
+        {
+            taxonomy: 'pwb-brand',
+            boxSelector: '#taxonomy-pwb-brand',
+            filterId: 'ea-product-brand-filter'
+        },
+        {
+            taxonomy: 'product_brand',
+            boxSelector: '#product_branddiv, #taxonomy-product_brand',
+            filterId: 'ea-product-brand-custom-filter'
+        }
+    ];
+    const placeholder = 'Filtrar items';
+    const noMatchText = 'No existe resultado que coincida';
+    const hiddenClass = 'ea-filter-category-hidden';
+    const minLength = 3;
+    const checkboxSelector = 'input[type="checkbox"]';
 
-	function normalize(value) {
-		return String(value || '')
-			.toLowerCase()
-			.normalize('NFD')
-			.replace(/[\u0300-\u036f]/g, '')
-			.trim();
-	}
+    const normalize = (value) => value.toLowerCase()
+        .normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
 
-	function getTermLabel(item) {
-		var label = item.querySelector(':scope > label');
+    const getLabel = (item) => item.querySelector(':scope > label')?.textContent.trim() ?? '';
 
-		return label ? label.textContent : item.textContent;
-	}
+    function filterList(list, term) {
+        let visibleCount = 0;
+        for (const item of list.children) {
+            if (!item.matches('li')) continue;
+            let childVisible = 0;
+            for (const child of item.children) {
+                if (child.matches('ul')) childVisible += filterList(child, term);
+            }
+            const visible = !term || normalize(getLabel(item)).includes(term) || childVisible > 0;
+            item.classList.toggle(hiddenClass, !visible);
+            if (visible) visibleCount++;
+        }
+        return visibleCount;
+    }
 
-	function filterList(list, term) {
-		var items = Array.prototype.slice.call(list.children).filter(function (child) {
-			return child.matches('li');
-		});
-		var visibleCount = 0;
+    function updateBadges(checkboxes, container) {
+        const selected = new Map();
+        for (const checkbox of checkboxes) {
+            if (!checkbox.checked || selected.has(checkbox.value)) continue;
+            const label = checkbox.labels?.[0]?.textContent.trim();
+            if (label) selected.set(checkbox.value, label);
+        }
+        container.replaceChildren(...Array.from(selected.values(), (text) => {
+            const badge = document.createElement('span');
+            badge.className = 'ea-filter-badge';
+            badge.textContent = text;
+            return badge;
+        }));
+    }
 
-		items.forEach(function (item) {
-			var childLists = Array.prototype.slice.call(item.children).filter(function (child) {
-				return child.matches('ul');
-			});
-			var childVisibleCount = 0;
-			var selfMatches = !term || normalize(getTermLabel(item)).indexOf(term) !== -1;
+    function createFilter(box, { taxonomy, filterId }) {
+        const targetBox = box.querySelector(`#taxonomy-${taxonomy}`) ?? box;
+        const tabs = targetBox.querySelector(`#${taxonomy}-tabs`);
+        const wrapper = document.createElement('div');
+        const input = document.createElement('input');
+        const status = document.createElement('p');
+        const badges = document.createElement('div');
 
-			childLists.forEach(function (childList) {
-				childVisibleCount += filterList(childList, term);
-			});
+        wrapper.className = 'ea-filter-category-control';
+        Object.assign(input, {
+            id: filterId, type: 'search', className: 'widefat',
+            placeholder, title: placeholder, autocomplete: 'off'
+        });
+        status.className = 'ea-filter-category-status';
+        badges.className = 'ea-filter-badges-container';
+        wrapper.append(input, status, badges);
+        if (tabs) tabs.after(wrapper);
+        else (targetBox.querySelector('.inside') ?? targetBox).prepend(wrapper);
 
-			if (selfMatches || childVisibleCount > 0) {
-				item.classList.remove(hiddenClass);
-				visibleCount += 1;
-			} else {
-				item.classList.add(hiddenClass);
-			}
-		});
+        const getLists = () => [...targetBox.querySelectorAll(
+            `#${taxonomy}checklist, #${taxonomy}checklist-pop`
+        )];
+        // Query each list separately: a comma selector cannot share a suffix.
+        const getCheckboxes = () => getLists().flatMap((list) => [...list.querySelectorAll(checkboxSelector)]);
 
-		return visibleCount;
-	}
+        function applyFilter() {
+            const query = normalize(input.value);
+            const term = query.length >= minLength ? query : '';
+            const lists = getLists();
+            const hasItems = lists.some((list) => list.querySelector(checkboxSelector));
+            const visibleLists = new Set(lists.filter((list) => {
+                const panel = list.closest('.tabs-panel');
+                return !panel || getComputedStyle(panel).display !== 'none';
+            }));
+            let total = 0;
+            for (const list of lists) {
+                const count = filterList(list, term);
+                if (visibleLists.has(list)) total += count;
+            }
+            input.style.display = hasItems ? '' : 'none';
+            status.style.display = hasItems ? '' : 'none';
+            status.textContent = hasItems && term && !total ? noMatchText : '';
+        }
 
-	function updateStatus(status, totalVisible) {
-		if (!status) {
-			return;
-		}
+        const refresh = () => {
+            applyFilter();
+            updateBadges(getCheckboxes(), badges);
+        };
+        input.addEventListener('input', applyFilter);
+        // Delegation includes nested checkboxes and terms added later by WordPress.
+        box.addEventListener('change', ({ target }) => {
+            if (target.matches(checkboxSelector) && getLists().some((list) => list.contains(target))) {
+                updateBadges(getCheckboxes(), badges);
+            }
+        });
+        for (const event of ['click', 'keyup', 'keydown']) {
+            tabs?.addEventListener(event, applyFilter);
+        }
+        refresh();
+        return { wrapper, refresh };
+    }
 
-		status.textContent = totalVisible ? '' : 'No matching categories';
-	}
+    function init() {
+        const controls = new WeakMap();
+        const sync = (records = []) => {
+            for (const config of taxonomies) {
+                const box = document.querySelector(config.boxSelector);
+                if (!box) continue;
+                const control = controls.get(box);
+                if (!control) {
+                    if (!document.getElementById(config.filterId)) {
+                        controls.set(box, createFilter(box, config));
+                    }
+                } else if (records.some(({ target }) => box.contains(target) && !control.wrapper.contains(target))) {
+                    control.refresh();
+                }
+            }
+        };
+        sync();
+        // React to inserted/replaced lists and late metaboxes; ignore our own UI updates.
+        new MutationObserver(sync).observe(document.getElementById('poststuff') ?? document.body, {
+            childList: true, subtree: true, characterData: true
+        });
+    }
 
-	function applyFilter(input, status, box) {
-		var term = normalize(input.value);
-		var lists = box.querySelectorAll('#product_catchecklist, #product_catchecklist-pop');
-		var totalVisible = 0;
-
-		lists.forEach(function (list) {
-			totalVisible += filterList(list, term);
-		});
-
-		updateStatus(status, totalVisible);
-	}
-
-	function createFilter(box) {
-		var wrapper = document.createElement('div');
-		var input = document.createElement('input');
-		var status = document.createElement('p');
-		var tabs = box.querySelector('#product_cat-tabs');
-
-		wrapper.className = 'ea-filter-category-control';
-		input.id = filterId;
-		input.type = 'search';
-		input.className = 'widefat';
-		input.placeholder = 'Filter product categories';
-		input.setAttribute('aria-label', 'Filter product categories');
-
-		status.className = 'ea-filter-category-status';
-		status.setAttribute('aria-live', 'polite');
-
-		wrapper.appendChild(input);
-		wrapper.appendChild(status);
-		box.insertBefore(wrapper, tabs || box.firstChild);
-
-		input.addEventListener('input', function () {
-			applyFilter(input, status, box);
-		});
-
-		return { input: input, status: status };
-	}
-
-	function init() {
-		var box = document.getElementById(taxonomyId);
-		var control;
-		var observer;
-
-		if (!box || document.getElementById(filterId)) {
-			return;
-		}
-
-		control = createFilter(box);
-
-		observer = new MutationObserver(function () {
-			applyFilter(control.input, control.status, box);
-		});
-
-		observer.observe(box, {
-			childList: true,
-			subtree: true
-		});
-	}
-
-	if (document.readyState === 'loading') {
-		document.addEventListener('DOMContentLoaded', init);
-	} else {
-		init();
-	}
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', init, { once: true });
+    } else {
+        init();
+    }
 })();
